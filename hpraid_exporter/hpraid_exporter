@@ -116,4 +116,5 @@ get_metrics() {
 	done
 }
 
+# Exposing metrics using netcat
 while true; do { echo -e 'HTTP/1.1 200 OK\r\n'; get_metrics | perl -ne 'print unless $lines{$_}++;'; } | nc -q 5 -s ${ADDRESS} -lp ${PORT}; done
