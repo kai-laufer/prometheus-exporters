@@ -1,0 +1,119 @@
+#!/bin/bash
+
+###################################################
+# 13.11.2019 klaufer:                             #
+# Name: raid_exporter.sh                          #
+#                                                 #
+# Author: Kai Laufer (mail@kai-laufer.de)         #
+# Version: 0.0.1                                  #
+# Created: 13.11.2019                             #
+# Modified: 15.11.2019                            #
+#                                                 #
+# Requirements:                                   #
+# - hpssacli or hpacucli                          #
+# - netcat                                        #
+#                                                 #
+# Tested on Debian (6/7/8/9/10)                   #
+#                                                 #
+# Description:                                    #
+# This is a very basic and simple exporter for    #
+# HP-Raidcontrollers.                             #
+###################################################
+
+readonly NAME=$(basename $0)
+readonly DIR=$(readlink -m $(dirname $0))
+readonly VERSION='0.0.1'
+
+print_help() {
+	cat <<-EOF
+		${NAME} (v${VERSION})
+
+		Usage:	
+		  ${DIR}/${NAME} --port 9876 --address 127.0.0.1
+
+		Required arguments:
+		  -a | --address		address to listen on [default: 127.0.0.1]
+		  -p | --port			port to bind the exporter on [default: 9876]
+
+		Optional arguments:
+		  -h | --help			print help
+	EOF
+	exit 0
+}
+
+while test -n "${1}"; do
+        case "${1}" in
+                --help|-h)
+                        print_help
+                        ;;
+                --port|-p)
+                        readonly PORT=${2}
+                        shift
+                        ;;
+                --address|-a)
+                        readonly ADDRESS=${2}
+                        shift
+                        ;;
+                *)
+                        echo "Unknown argument: ${1}"
+                        print_help
+                        exit 3;
+                        ;;
+        esac
+        shift
+done
+
+# Check if HP binary exists
+if [[ -f /usr/sbin/hpssacli ]]; then
+	HPTOOL="/usr/sbin/hpssacli"
+elif [[ -f /usr/sbin/hpacucli ]]; then
+        HPTOOL="/usr/sbin/hpacucli"
+else
+	echo "Neither /usr/sbin/hpssacli nor /usr/sbin/hpacucli found."
+	echo "Please install one of both."
+	exit 1
+fi
+
+# Set default address if address is not given
+if [[ -z ${ADDRESS} ]]; then
+	readonly ADDRESS="127.0.0.1"
+fi
+
+# Set default address if port is not given
+if [[ -z ${PORT} ]]; then
+	readonly PORT="9876"
+fi
+
+get_metrics() {
+	METRICS=$(${HPTOOL} ctrl all show status | egrep -i 'controller|cache status|battery/capacitor' | sed 's/ //g' | sort && ${HPTOOL} ctrl all show config | egrep -i 'cage|logicaldrive|physicaldrive' | sed 's/ //g' | sort)
+	for METRIC in ${METRICS[@]}; do
+		if [[ ${METRIC} == *"OK"* ]]; then
+			STATE=0
+		else
+			STATE=1
+		fi
+                if [[ ${METRIC} == *"Battery/Capacitor"* ]]; then
+                        echo "# HELP bbu status: 0 = OK, 1 = not OK"
+                        echo "# TYPE bbu gauge"
+                        echo "bbu{label=\"${METRIC}\"} ${STATE}"
+		elif [[ ${METRIC} == *"Controller"* ]]; then
+			echo "# HELP controller status: 0 = OK, 1 = not OK"
+	                echo "# TYPE controller gauge"
+			echo "controller{label=\"${METRIC}\"} ${STATE}"
+		elif [[ ${METRIC} == *"Cache"* ]]; then
+	                echo "# HELP cache status: 0 = OK, 1 = not OK"
+	                echo "# TYPE cache gauge"
+			echo "cache{label=\"${METRIC}\"} ${STATE}"
+		elif [[ ${METRIC} == *"logicaldrive"* ]]; then
+	                echo "# HELP logicaldrive status: 0 = OK, 1 = not OK"
+	                echo "# TYPE logicaldrive gauge"
+			echo "logicaldrive{label=\"${METRIC}\"} ${STATE}"
+		elif [[ ${METRIC} == *"physicaldrive"* ]]; then
+	                echo "# HELP physicaldrive status: 0 = OK, 1 = not OK"
+	                echo "# TYPE physicaldrive gauge"
+			echo "physicaldrive{label=\"${METRIC}\"} ${STATE}"
+		fi
+	done
+}
+
+while true; do { echo -e 'HTTP/1.1 200 OK\r\n'; get_metrics | perl -ne 'print unless $lines{$_}++;'; } | nc -q 5 -s ${ADDRESS} -lp ${PORT}; done
